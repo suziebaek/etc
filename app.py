@@ -190,4 +190,4 @@ if uploaded_file is not None and submit_button:
                     folder_file_path = f"{q_num}/test.html"
                     
                     # 3) 압축 파일 내부에 폴더와 함께 저장
-                    zip_file.writestr(folder_file_path, single_html
+                    zip_file.writestr(folder_file_path, single_html)
