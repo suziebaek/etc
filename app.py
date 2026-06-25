@@ -6,7 +6,7 @@ import io
 import zipfile
 
 # ==========================================
-# [기능 1] Word 파일을 읽어서 문항별로 쪼개는 기능 (기존 구조 복원 및 양식 통합)
+# [기능 1] Word 파일을 읽어서 문항별로 쪼개는 기능 (출처 텍스트 완벽 차단)
 # ==========================================
 def parse_docx(file):
     doc = docx.Document(file)
@@ -17,17 +17,17 @@ def parse_docx(file):
     opt_pattern = re.compile(r'^([①②③④⑤])\s*(.*)') # 선택지 매칭 (예: ① 달리다)
     arrow_pattern = re.compile(r'^[→↳\s]+(.*)') # 화살표 하위 문장 매칭
     
-    # 워드 문서의 메인 바디에 속한 요소(문단 및 표)들을 순서대로 정밀 수집합니다.
+    # 무시해야 할 단원/교재 출처 패턴 정의 (대소문자 구분 없이 Vocabulary, Reading, Chunking 등 시작하는 라인)
+    ignore_pattern = re.compile(r'^(vocabulary|reading|chunking|inside|starter|w\d+|\d+주차|\[part|ch|chapter)', re.IGNORECASE)
+    
     all_elements = []
     for element in doc.element.body:
-        # 💡 중요: 표 내부에 포함된 하위 문단이 이중으로 잡히는 것을 방지하기 위해 
-        # 최상위 body 바로 아래에 있는 요소만 순서대로 수집합니다.
+        # 최상위 body 바로 아래에 있는 요소만 순서대로 수집 (표 내부 문단 중복 처리 방지)
         if element.getparent() != doc.element.body:
             continue
             
         if element.tag.endswith('p'):  # 일반 문단일 때
             p = docx.text.paragraph.Paragraph(element, doc)
-            # 단어별 서식을 체크하여 밑줄(underline)이 있다면 <u> 태그 삽입
             text_with_formatting = ""
             for run in p.runs:
                 if run.underline and run.text.strip():
@@ -57,20 +57,24 @@ def parse_docx(file):
             if table_lines:
                 all_elements.append({"type": "table", "lines": table_lines})
 
-    # 순서대로 정렬된 요소를 바탕으로 문항 객체를 생성합니다.
+    # 정렬된 요소를 바탕으로 문항 추출 수행
     for item in all_elements:
         if item["type"] == "table":
+            # 💡 번호가 시작되어 방이 개설된 상태(`current_q`가 있을 때)에만 표 데이터를 지문으로 인정합니다.
             if current_q is not None:
                 for t_line in item["lines"]:
+                    # 표 내부 내용이라도 출처 텍스트 패턴이면 제외
+                    if ignore_pattern.match(t_line.strip()):
+                        continue
                     converted_t_line = re.sub(r'_{2,}', '<span class="underline" style="width:100px;"></span>', t_line)
                     if "The following table:" in converted_t_line:
                         continue
                     current_q["sentence"].append(converted_t_line)
             continue
 
-        line = item["text"]
+        line = item["text"].strip()
 
-        # 1. 새로운 문제 번호를 만났을 때 (가장 안정적인 분할 타이밍)
+        # 1. 새로운 문제 번호를 만났을 때 (새로운 문제 방 개설)
         q_match = q_pattern.match(line)
         if q_match:
             if current_q is not None:
@@ -83,7 +87,8 @@ def parse_docx(file):
             }
             continue
 
-        if current_q is None:
+        # 💡 [핵심 보완] 아직 문제 번호가 안 나왔거나, 출처 관련 텍스트(ignore_pattern)인 경우 통째로 패스!
+        if current_q is None or ignore_pattern.match(line):
             continue
 
         # 교사용 정답 라인 패스
@@ -116,11 +121,11 @@ def parse_docx(file):
         if "The following table:" in line:
             continue
 
-        # 4. 그 외의 텍스트는 일반 지문 문장으로 처리
+        # 4. 번호 안쪽에서 발견된 그 외의 모든 일반 문장은 지문으로 처리
         converted_line = re.sub(r'_{2,}', '<span class="underline" style="width:100px;"></span>', line)
         current_q["sentence"].append(converted_line)
 
-    # 마지막 문항 추가
+    # 마지막 문항 추가 마감
     if current_q is not None:
         questions.append(current_q)
 
@@ -206,14 +211,14 @@ with st.sidebar:
     st.text_input("act_name", value="Vocabulary")
 
 st.title("🗂️ 주차 연동 및 색상 지정 시스템")
-st.caption("Word 정기평가 파일을 업로드하면 원본 구조를 유지하며 1번부터 전체 문항을 ZIP 파일로 자동 분할 생성합니다.")
+st.caption("Word 정기평가 파일을 업로드하면 불필요한 출처 기호를 완전히 청소하고 오직 문제 정보만 정밀 분할 생성합니다.")
 
 uploaded_file = st.file_uploader("워드 파일(.docx)을 업로드하세요", type=["docx"])
 submit_button = st.button("🚀 번호별 폴더 구조로 분할 변환하기", type="primary")
 
 if uploaded_file is not None and submit_button:
     try:
-        with st.spinner("문서 연동 및 서식 분석을 통합 진행 중입니다..."):
+        with st.spinner("출처 데이터 필터링 및 서식 클리닝 작업을 진행 중입니다..."):
             parsed_data = parse_docx(uploaded_file)
             
             zip_buffer = io.BytesIO()
@@ -229,7 +234,7 @@ if uploaded_file is not None and submit_button:
             
             zip_data = zip_buffer.getvalue()
             
-        st.success(f"🎉 성공적으로 총 {len(parsed_data)}개의 전체 문항을 정상 분리 완료했습니다!")
+        st.success(f"🎉 불필요한 텍스트를 모두 차단하고 총 {len(parsed_data)}개의 핵심 문항 패키지를 완벽하게 구축했습니다!")
         
         st.subheader("📂 패키지 파일 내보내기")
         st.download_button(
@@ -238,7 +243,7 @@ if uploaded_file is not None and submit_button:
             file_name="questions_folders.zip",
             mime="application/zip"
         )
-        st.info(f"💡 두 종류의 정기평가 파일(교사용/초안) 모두 1번부터 누락 없이 정상 변환을 지원합니다.")
+        st.info(f"💡 이제 HTML 파일의 지문 영역(`<div class='sentence'>`) 상단에 잡다한 단원명이 들어가지 않고 깨끗하게 출력됩니다.")
             
     except Exception as e:
         st.error(f"⚠️ 시스템 오류가 발생했습니다: {e}")
