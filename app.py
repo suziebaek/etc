@@ -107,7 +107,6 @@ def generate_single_html(q):
 \t\t<div class="pageConts">
 """
 
-    # 해당 문제 1개만 바인딩
     html_content += f"""\t\t\t<div class="q_box">
 \t\t\t\t<table class="answer_txt STChooseAnAnswer L_tableQuestion" scale="190" answer="2" gravity="top|left">
 \t\t\t\t\t<tr>
@@ -169,12 +168,13 @@ uploaded_file = st.file_uploader("워드 파일(.docx)을 업로드하세요", t
 # 실행 버튼
 submit_button = st.button("🚀 번호별 폴더 구조로 분할 변환하기", type="primary")
 
+# 실행 조건문 시작
 if uploaded_file is not None and submit_button:
     try:
         with st.spinner("Word 파일을 쪼개어 번호별 독립 폴더 세트를 구축하는 중입니다..."):
             parsed_data = parse_docx(uploaded_file)
             
-            # 📁 메모리 상에 ZIP 압축 파일을 만들기 위한 가상 상자 준비
+            # 가상 압축 상자 준비
             zip_buffer = io.BytesIO()
             
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
@@ -183,11 +183,28 @@ if uploaded_file is not None and submit_button:
                     if not q_num:
                         continue
                     
-                    # 1) 이 문항만의 개별 HTML 코드 생성
+                    # 1) 개별 HTML 생성
                     single_html = generate_single_html(q)
                     
-                    # 2) 저장 경로를 '번호폴더/test.html' 형태로 동적 지정 (예: 1/test.html, 2/test.html ...)
+                    # 2) 저장 경로 지정 (예: 1/test.html)
                     folder_file_path = f"{q_num}/test.html"
                     
-                    # 3) 압축 파일 내부에 폴더와 함께 저장
+                    # 3) 압축 파일 내부에 저장
                     zip_file.writestr(folder_file_path, single_html)
+            
+            zip_data = zip_buffer.getvalue()
+            
+        st.success(f"🎉 성공적으로 {len(parsed_data)}개의 문항을 분석하여 번호별 독립 폴더 구조 배치를 완료했습니다!")
+        
+        # 다운로드 구역
+        st.subheader("📂 패키지 파일 내보내기")
+        st.download_button(
+            label="📥 번호별 폴더 압축파일(.zip) 다운로드",
+            data=zip_data,
+            file_name="questions_folders.zip",
+            mime="application/zip"
+        )
+        st.info("💡 다운로드한 `questions_folders.zip` 파일의 압축을 풀면 [1], [2], [3] ... [20] 폴더가 나오고, 각 폴더 안에 전용 `test.html` 파일이 각각 들어있습니다.")
+            
+    except Exception as e:
+        st.error(f"⚠️ 시스템 오류가 발생했습니다: {e}")
