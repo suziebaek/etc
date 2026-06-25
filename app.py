@@ -2,6 +2,8 @@ import streamlit as st
 import docx
 import re
 import html
+import io
+import zipfile
 
 # ==========================================
 # [기능 1] Word 파일을 읽어서 문항별로 쪼개는 기능
@@ -11,19 +13,16 @@ def parse_docx(file):
     questions = []
     current_q = None
     
-    # 글자들을 구별해내는 규칙 패턴들
-    q_pattern = re.compile(r'^(\d+)\.?\s*(.*)')  # 번호 뒤에 점(.)이 없어도 인식하도록 보완
-    opt_pattern = re.compile(r'^([①②③④⑤])\s*(.*)')
+    q_pattern = re.compile(r'^(\d+)\.?\s*(.*)')  # 번호 매칭
+    opt_pattern = re.compile(r'^([①②③④⑤])\s*(.*)') # 보기 매칭
     meta_pattern = re.compile(r'^\[Chapter')
     
-    # 문서에서 빈 줄을 제외하고 글자만 추출
     lines = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
     
     i = 0
     while i < len(lines):
         line = lines[i]
         
-        # [Chapter... 로 시작하면 새로운 문제 준비하기
         if meta_pattern.match(line):
             if current_q:
                 questions.append(current_q)
@@ -34,7 +33,6 @@ def parse_docx(file):
         if current_q is None:
             current_q = {"num": "", "title": "", "sentence": [], "options": []}
             
-        # 1. 2. 같은 문제 번호와 발문 찾기
         q_match = q_pattern.match(line)
         if q_match:
             current_q["num"] = q_match.group(1)
@@ -42,17 +40,14 @@ def parse_docx(file):
             i += 1
             continue
             
-        # ① ② 같은 보기 번호와 선택지 찾기
         opt_match = opt_pattern.match(line)
         if opt_match:
             label_char = opt_match.group(1)
             opt_text = opt_match.group(2)
             
-            # 원문자를 숫자 시스템(1~5)으로 변경
             label_map = {"①": "1", "②": "2", "③": "3", "④": "4", "⑤": "5"}
             label_num = label_map.get(label_char, "1")
             
-            # 글자 사이의 넓은 공백을 시험지 스타일(  -  )로 예쁘게 정돈
             processed_opt = re.sub(r'\s{2,}', ' &nbsp;&nbsp;-&nbsp;&nbsp; ', opt_text)
             
             current_q["options"].append({
@@ -63,7 +58,6 @@ def parse_docx(file):
             i += 1
             continue
             
-        # 보기 지문(The following table:) 처리 및 밑줄(___)을 웹용 코드로 변경
         if "The following table:" in line:
             i += 1
             if i < len(lines):
@@ -75,7 +69,6 @@ def parse_docx(file):
                 i += 1
             continue
         
-        # 일반 지문 문장 처리
         converted_line = re.sub(r'_{2,}', '<span class="underline" style="width:100px;"></span>', line)
         current_q["sentence"].append(converted_line)
         i += 1
@@ -87,9 +80,9 @@ def parse_docx(file):
 
 
 # ==========================================
-# [기능 2] 쪼갠 문항들을 멋진 HTML 양식으로 조립하는 기능
+# [기능 2] '단 한 개의 문항'만 가지고 규격 HTML 서식을 만드는 기능
 # ==========================================
-def generate_html(questions):
+def generate_single_html(q):
     html_content = """<!DOCTYPE html>
 <html>
 <head>
@@ -109,42 +102,40 @@ def generate_html(questions):
 </head>
 <body>
 <div class="pageWrap">
-
-\t<div class="listening_desc_box"><b>Question 1-20</b> 질문을 읽고물음에 답하시오.</div>
-
-\t\t<div id="L_question" class="STSection">
+\t<div class="listening_desc_box"><b>Question 1-20</b> 질문을 읽고 물음에 답하시오.</div>
+\t<div id="L_question" class="STSection">
 \t\t<div class="pageConts">
 """
 
-    for q in questions:
-        html_content += f"""\t\t\t<div class="q_box">
+    # 해당 문제 1개만 바인딩
+    html_content += f"""\t\t\t<div class="q_box">
 \t\t\t\t<table class="answer_txt STChooseAnAnswer L_tableQuestion" scale="190" answer="2" gravity="top|left">
 \t\t\t\t\t<tr>
 \t\t\t\t\t\t<td><span class="num STCorrectness">{q['num']}.</span></td>
 \t\t\t\t\t\t<td>{html.escape(q['title'])} <br></td>
 \t\t\t\t\t</tr>\n"""
-        
-        if q["sentence"]:
-            sentence_br = " <br/> \n".join(q["sentence"])
-            html_content += f"""\t\t\t\t\t<tr>
+    
+    if q["sentence"]:
+        sentence_br = " <br/> \n".join(q["sentence"])
+        html_content += f"""\t\t\t\t\t<tr>
 \t\t\t\t\t\t<td></td>
 \t\t\t\t\t\t<td>
 \t\t\t\t\t\t\t<div class="sentence">{sentence_br} \n\t\t\t\t\t\t\t</div>
 \t\t\t\t\t\t</td>
 \t\t\t\t\t</tr>\n"""
-            
-        for opt in q["options"]:
-            html_content += f"""\t\t\t\t\t<tr>
+        
+    for opt in q["options"]:
+        html_content += f"""\t\t\t\t\t<tr>
 \t\t\t\t\t\t<td></td>
 \t\t\t\t\t\t<td><span class="STChoice" remarkable="true" label="{opt['num']}"><span class="label">{opt['char']}</span> {opt['text']} </span></td>
 \t\t\t\t\t</tr>\n"""
-            
-        html_content += """\t\t\t\t</table>
-\t\t\t</div>\n\n"""
+        
+    html_content += """\t\t\t\t</table>
+\t\t\t</div>\n"""
 
     html_content += """\t\t</div>
 \t</div>
-\t</div>
+</div>
 </body>
 </html>"""
 
@@ -152,12 +143,12 @@ def generate_html(questions):
 
 
 # ==========================================
-# [기능 3] 웹 화면 디자인 구역
+# [기능 3] 웹 화면 레이아웃 및 다운로드 제어
 # ==========================================
 
 st.set_page_config(page_title="주차 연동 및 색상 지정 시스템", layout="wide")
 
-# [왼쪽 사이드바] 기존 설정창 유지
+# [왼쪽 사이드바] 고정값 설정 영역
 with st.sidebar:
     st.header("⚙️ 고정값 설정")
     st.text_input("service_code", value="SVC170")
@@ -168,39 +159,35 @@ with st.sidebar:
     st.text_input("book_code", value="SVC170")
     st.text_input("act_name", value="Vocabulary")
 
-# [메인 화면] 타이틀
+# [메인 화면]
 st.title("🗂️ 주차 연동 및 색상 지정 시스템")
-st.caption("Word 정기평가 파일을 업로드하고 버튼을 누르면 정해진 규격의 HTML 파일로 변환합니다.")
+st.caption("Word 정기평가 파일을 업로드하면 문항별 폴더 구조를 가진 ZIP 압축 파일로 자동 분할 생성합니다.")
 
 # 파일 업로드 상자
 uploaded_file = st.file_uploader("워드 파일(.docx)을 업로드하세요", type=["docx"])
 
-# ⭐ 초보자 전용 [HTML 변환 시작] 버튼 추가!
-submit_button = st.button("🚀 HTML 코드로 변환하기", type="primary")
+# 실행 버튼
+submit_button = st.button("🚀 번호별 폴더 구조로 분할 변환하기", type="primary")
 
-# 파일이 올라갔고 + '변환하기' 버튼을 눌렀을 때만 작동하도록 조건 변경
 if uploaded_file is not None and submit_button:
     try:
-        with st.spinner("Word 문서를 분석하여 웹 표준 코드로 바꾸는 중입니다..."):
+        with st.spinner("Word 파일을 쪼개어 번호별 독립 폴더 세트를 구축하는 중입니다..."):
             parsed_data = parse_docx(uploaded_file)
-            final_html = generate_html(parsed_data)
             
-        st.success(f"🎉 성공적으로 {len(parsed_data)}개의 문항을 변환했습니다! (1번 ~ {len(parsed_data)}번 완료)")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("🖥️ 완성된 HTML 소스 코드")
-            st.code(final_html, language="html", line_numbers=True)
+            # 📁 메모리 상에 ZIP 압축 파일을 만들기 위한 가상 상자 준비
+            zip_buffer = io.BytesIO()
             
-        with col2:
-            st.subheader("📂 시스템 파일 내보내기")
-            st.download_button(
-                label="📥 HTML 파일 다운로드 받기",
-                data=final_html,
-                file_name="test.html",
-                mime="text/html"
-            )
-            st.info("💡 위 다운로드 버튼을 누르면 `test.html` 파일이 컴퓨터에 저장됩니다.")
-            
-    except Exception as e:
-        st.error(f"⚠️ 파일 분석 중 오류가 발생했습니다: {e}")
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                for q in parsed_data:
+                    q_num = q["num"]
+                    if not q_num:
+                        continue
+                    
+                    # 1) 이 문항만의 개별 HTML 코드 생성
+                    single_html = generate_single_html(q)
+                    
+                    # 2) 저장 경로를 '번호폴더/test.html' 형태로 동적 지정 (예: 1/test.html, 2/test.html ...)
+                    folder_file_path = f"{q_num}/test.html"
+                    
+                    # 3) 압축 파일 내부에 폴더와 함께 저장
+                    zip_file.writestr(folder_file_path, single_html
