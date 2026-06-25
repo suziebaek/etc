@@ -6,7 +6,7 @@ import io
 import zipfile
 
 # ==========================================
-# [기능 1] Word 파일을 읽어서 문항별로 쪼개는 기능 (출처 텍스트 완벽 차단)
+# [기능 1] Word 파일을 읽어서 문항별로 쪼개는 기능 (강력한 필터링 보완)
 # ==========================================
 def parse_docx(file):
     doc = docx.Document(file)
@@ -17,8 +17,8 @@ def parse_docx(file):
     opt_pattern = re.compile(r'^([①②③④⑤])\s*(.*)') # 선택지 매칭 (예: ① 달리다)
     arrow_pattern = re.compile(r'^[→↳\s]+(.*)') # 화살표 하위 문장 매칭
     
-    # 무시해야 할 단원/교재 출처 패턴 정의 (대소문자 구분 없이 Vocabulary, Reading, Chunking 등 시작하는 라인)
-    ignore_pattern = re.compile(r'^(vocabulary|reading|chunking|inside|starter|w\d+|\d+주차|\[part|ch|chapter)', re.IGNORECASE)
+    # 💡 [보완] 문장 중간 어디든 출처 키워드가 포함되어 있으면 완전히 걸러내도록 무시 패턴 강화
+    ignore_keywords = ["vocabulary", "reading", "chunking", "inside", "starter", "w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "주차", "[part", "chapter"]
     
     all_elements = []
     for element in doc.element.body:
@@ -60,19 +60,21 @@ def parse_docx(file):
     # 정렬된 요소를 바탕으로 문항 추출 수행
     for item in all_elements:
         if item["type"] == "table":
-            # 💡 번호가 시작되어 방이 개설된 상태(`current_q`가 있을 때)에만 표 데이터를 지문으로 인정합니다.
             if current_q is not None:
                 for t_line in item["lines"]:
-                    # 표 내부 내용이라도 출처 텍스트 패턴이면 제외
-                    if ignore_pattern.match(t_line.strip()):
+                    # 💡 표 내부 텍스트도 강력 필터링 검사 수행
+                    t_line_lower = t_line.lower()
+                    if any(k in t_line_lower for k in ignore_keywords):
                         continue
+                        
                     converted_t_line = re.sub(r'_{2,}', '<span class="underline" style="width:100px;"></span>', t_line)
-                    if "The following table:" in converted_t_line:
+                    if "the following table:" in converted_t_line.lower():
                         continue
                     current_q["sentence"].append(converted_t_line)
             continue
 
         line = item["text"].strip()
+        line_lower = line.lower()
 
         # 1. 새로운 문제 번호를 만났을 때 (새로운 문제 방 개설)
         q_match = q_pattern.match(line)
@@ -87,8 +89,8 @@ def parse_docx(file):
             }
             continue
 
-        # 💡 [핵심 보완] 아직 문제 번호가 안 나왔거나, 출처 관련 텍스트(ignore_pattern)인 경우 통째로 패스!
-        if current_q is None or ignore_pattern.match(line):
+        # 💡 [핵심 보완] 방이 없거나, 줄바꿈 속에 출처 키워드가 단 하나라도 포함되어 있다면 즉시 통째로 패스!
+        if current_q is None or any(k in line_lower for k in ignore_keywords):
             continue
 
         # 교사용 정답 라인 패스
@@ -118,7 +120,7 @@ def parse_docx(file):
             current_q["options"][-1]["text"] += f" <br/> {line}"
             continue
 
-        if "The following table:" in line:
+        if "the following table:" in line_lower:
             continue
 
         # 4. 번호 안쪽에서 발견된 그 외의 모든 일반 문장은 지문으로 처리
@@ -133,7 +135,7 @@ def parse_docx(file):
 
 
 # ==========================================
-# [기능 2] '단 한 개의 문항'만 가지고 규격 HTML 서식을 만드는 기능
+# [기능 2] '단 한 개의 문항'만 가지고 규격 HTML 서식을 만드는 기능 (태그 깨짐 수정)
 # ==========================================
 def generate_single_html(q):
     html_content = """<!DOCTYPE html>
@@ -160,11 +162,15 @@ def generate_single_html(q):
 \t\t<div class="pageConts">
 """
 
+    # 💡 [오류 수정] 타이틀 내부의 <u> 태그가 이스케이프되어 깨지지 않도록 안전 변환 로직을 우회/복원합니다.
+    safe_title = html.escape(q['title'])
+    safe_title = safe_title.replace("&lt;u&gt;", "<u>").replace("&lt;/u&gt;", "</u>")
+
     html_content += f"""\t\t\t<div class="q_box">
 \t\t\t\t<table class="answer_txt STChooseAnAnswer L_tableQuestion" scale="190" answer="2" gravity="top|left">
 \t\t\t\t\t<tr>
 \t\t\t\t\t\t<td><span class="num STCorrectness">{q['num']}.</span></td>
-\t\t\t\t\t\t<td>{html.escape(q['title'])} <br></td>
+\t\t\t\t\t\t<td>{safe_title} <br></td>
 \t\t\t\t\t</tr>\n"""
     
     if q["sentence"]:
@@ -218,7 +224,7 @@ submit_button = st.button("🚀 번호별 폴더 구조로 분할 변환하기",
 
 if uploaded_file is not None and submit_button:
     try:
-        with st.spinner("출처 데이터 필터링 및 서식 클리닝 작업을 진행 중입니다..."):
+        with st.spinner("출처 데이터 완전 필터링 및 지시문 서식 복원 중..."):
             parsed_data = parse_docx(uploaded_file)
             
             zip_buffer = io.BytesIO()
@@ -234,7 +240,7 @@ if uploaded_file is not None and submit_button:
             
             zip_data = zip_buffer.getvalue()
             
-        st.success(f"🎉 불필요한 텍스트를 모두 차단하고 총 {len(parsed_data)}개의 핵심 문항 패키지를 완벽하게 구축했습니다!")
+        st.success(f"🎉 출처 노이즈 제거 및 지시문 밑줄 서식 매칭 복원을 완료했습니다! (총 {len(parsed_data)}개 문항)")
         
         st.subheader("📂 패키지 파일 내보내기")
         st.download_button(
@@ -243,7 +249,7 @@ if uploaded_file is not None and submit_button:
             file_name="questions_folders.zip",
             mime="application/zip"
         )
-        st.info(f"💡 이제 HTML 파일의 지문 영역(`<div class='sentence'>`) 상단에 잡다한 단원명이 들어가지 않고 깨끗하게 출력됩니다.")
+        st.info(f"💡 이제 6번 이후에도 지문 상단에 출처명이 섞이지 않으며, 지시문의 '<u>않은</u>' 서식이 정상 표출됩니다.")
             
     except Exception as e:
         st.error(f"⚠️ 시스템 오류가 발생했습니다: {e}")
