@@ -6,28 +6,72 @@ import io
 import zipfile
 
 # ==========================================
-# [기능 1] Word 파일을 읽어서 문항별로 쪼개는 기능
+# [기능 1] Word 파일을 읽어서 문항별로 쪼개는 기능 (표 인식 보완)
 # ==========================================
 def parse_docx(file):
     doc = docx.Document(file)
     questions = []
     current_q = None
     
-    q_pattern = re.compile(r'^(\d+)\.?\s*(.*)')  # 번호 매칭
-    opt_pattern = re.compile(r'^([①②③④⑤])\s*(.*)') # 보기 매칭
-    meta_pattern = re.compile(r'^\[Chapter')
+    q_pattern = re.compile(r'^(\d+)\.?\s*(.*)')  # 문제 번호 매칭
+    opt_pattern = re.compile(r'^([①②③④⑤])\s*(.*)') # 선택지 매칭
+    meta_pattern = re.compile(r'^\[Chapter') # 단원 태그 매칭
     
-    lines = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+    # 💡 [핵심 보완] 워드 문서의 일반 문단과 표(테이블) 안의 텍스트를 순서대로 합쳐서 추출합니다.
+    all_elements = []
     
-    i = 0
-    while i < len(lines):
-        line = lines[i]
+    # 워드 문서 내부의 모든 요소(문단 또는 표)를 순서대로 순회합니다.
+    for element in doc.element.body:
+        if element.tag.endswith('p'): # 일반 문단일 때
+            p = docx.text.paragraph.Paragraph(element, doc)
+            txt = p.text.strip()
+            if txt:
+                all_elements.append({"type": "text", "text": txt})
+        elif element.tag.endswith('tbl'): # 📦 표(네모 상자)일 때
+            t = docx.table.Table(element, doc)
+            # 표 안의 모든 셀(칸)에 들어있는 텍스트를 줄바꿈 기준으로 한데 모읍니다.
+            table_lines = []
+            for row in t.rows:
+                for cell in cell.paragraphs:
+                    ctxt = cell.text.strip()
+                    if ctxt and ctxt not in table_lines:
+                        table_lines.append(ctxt)
+            
+            # 표 내부 텍스트가 존재하면 하나의 '표 지문' 덩어리로 저장합니다.
+            if table_lines:
+                all_elements.append({"type": "table", "lines": table_lines})
+
+    idx = 0
+    while idx < len(all_elements):
+        item = all_elements[idx]
+        
+        # 1. 표(네모 상자) 데이터 무리를 만났을 때 처리
+        if item["type"] == "table":
+            if current_q is not None:
+                for t_line in item["lines"]:
+                    # 밑줄(___)을 웹용 span 코드로 자동 치환
+                    converted_t_line = re.sub(r'_{2,}', '<span class="underline" style="width:100px;"></span>', t_line)
+                    # 쉼표(,)로 연결된 다중 지문이 있다면 개별 줄바꿈으로 쪼개어 담기
+                    if "The following table:" in converted_t_line:
+                        continue
+                    if ',' in t_line and not opt_pattern.match(t_line):
+                        for sub_t in t_line.split(','):
+                            if sub_t.strip():
+                                converted_sub = re.sub(r'_{2,}', '<span class="underline" style="width:100px;"></span>', sub_t.strip())
+                                current_q["sentence"].append(converted_sub)
+                    else:
+                        current_q["sentence"].append(converted_t_line)
+            idx += 1
+            continue
+            
+        # 2. 일반 텍스트 문장일 때 처리
+        line = item["text"]
         
         if meta_pattern.match(line):
             if current_q:
                 questions.append(current_q)
             current_q = {"num": "", "title": "", "sentence": [], "options": []}
-            i += 1
+            idx += 1
             continue
             
         if current_q is None:
@@ -37,7 +81,7 @@ def parse_docx(file):
         if q_match:
             current_q["num"] = q_match.group(1)
             current_q["title"] = q_match.group(2)
-            i += 1
+            idx += 1
             continue
             
         opt_match = opt_pattern.match(line)
@@ -55,23 +99,23 @@ def parse_docx(file):
                 "num": label_num,
                 "text": processed_opt
             })
-            i += 1
+            idx += 1
             continue
             
         if "The following table:" in line:
-            i += 1
-            if i < len(lines):
-                sub_lines = [s.strip() for s in lines[i].split(',')]
+            idx += 1
+            if idx < len(all_elements) and all_elements[idx]["type"] == "text":
+                sub_lines = [s.strip() for s in all_elements[idx]["text"].split(',')]
                 for sl in sub_lines:
                     if sl:
                         converted_sl = re.sub(r'_{2,}', '<span class="underline" style="width:100px;"></span>', sl)
                         current_q["sentence"].append(converted_sl)
-                i += 1
+                idx += 1
             continue
         
         converted_line = re.sub(r'_{2,}', '<span class="underline" style="width:100px;"></span>', line)
         current_q["sentence"].append(converted_line)
-        i += 1
+        idx += 1
         
     if current_q and (current_q["num"] or current_q["title"]):
         questions.append(current_q)
@@ -114,6 +158,7 @@ def generate_single_html(q):
 \t\t\t\t\t\t<td>{html.escape(q['title'])} <br></td>
 \t\t\t\t\t</tr>\n"""
     
+    # 💡 표 상자 안에 있던 지문들이 여기에 깔끔하게 <div class="sentence"> 형태로 들어갑니다.
     if q["sentence"]:
         sentence_br = " <br/> \n".join(q["sentence"])
         html_content += f"""\t\t\t\t\t<tr>
@@ -147,7 +192,6 @@ def generate_single_html(q):
 
 st.set_page_config(page_title="주차 연동 및 색상 지정 시스템", layout="wide")
 
-# [왼쪽 사이드바] 고정값 설정 영역
 with st.sidebar:
     st.header("⚙️ 고정값 설정")
     st.text_input("service_code", value="SVC170")
@@ -158,45 +202,32 @@ with st.sidebar:
     st.text_input("book_code", value="SVC170")
     st.text_input("act_name", value="Vocabulary")
 
-# [메인 화면]
 st.title("🗂️ 주차 연동 및 색상 지정 시스템")
-st.caption("Word 정기평가 파일을 업로드하면 문항별 폴더 구조를 가진 ZIP 압축 파일로 자동 분할 생성합니다.")
+st.caption("Word 정기평가 파일을 업로드하면 네모 상자(표) 지문까지 완벽히 파싱하여 ZIP 압축 파일로 자동 분할 생성합니다.")
 
-# 파일 업로드 상자
 uploaded_file = st.file_uploader("워드 파일(.docx)을 업로드하세요", type=["docx"])
-
-# 실행 버튼
 submit_button = st.button("🚀 번호별 폴더 구조로 분할 변환하기", type="primary")
 
-# 실행 조건문 시작
 if uploaded_file is not None and submit_button:
     try:
         with st.spinner("Word 파일을 쪼개어 번호별 독립 폴더 세트를 구축하는 중입니다..."):
             parsed_data = parse_docx(uploaded_file)
             
-            # 가상 압축 상자 준비
             zip_buffer = io.BytesIO()
-            
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                 for q in parsed_data:
                     q_num = q["num"]
                     if not q_num:
                         continue
                     
-                    # 1) 개별 HTML 생성
                     single_html = generate_single_html(q)
-                    
-                    # 2) 저장 경로 지정 (예: 1/test.html)
                     folder_file_path = f"{q_num}/test.html"
-                    
-                    # 3) 압축 파일 내부에 저장
                     zip_file.writestr(folder_file_path, single_html)
             
             zip_data = zip_buffer.getvalue()
             
         st.success(f"🎉 성공적으로 {len(parsed_data)}개의 문항을 분석하여 번호별 독립 폴더 구조 배치를 완료했습니다!")
         
-        # 다운로드 구역
         st.subheader("📂 패키지 파일 내보내기")
         st.download_button(
             label="📥 번호별 폴더 압축파일(.zip) 다운로드",
@@ -204,7 +235,7 @@ if uploaded_file is not None and submit_button:
             file_name="questions_folders.zip",
             mime="application/zip"
         )
-        st.info("💡 다운로드한 `questions_folders.zip` 파일의 압축을 풀면 [1], [2], [3] ... [20] 폴더가 나오고, 각 폴더 안에 전용 `test.html` 파일이 각각 들어있습니다.")
+        st.info("💡 압축을 풀면 표 내부 지문이 <div class='sentence'> 태그로 안전하게 감싸진 개별 test.html 파일들을 확인할 수 있습니다.")
             
     except Exception as e:
         st.error(f"⚠️ 시스템 오류가 발생했습니다: {e}")
