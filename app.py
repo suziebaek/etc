@@ -6,7 +6,7 @@ import io
 import zipfile
 
 # ==========================================
-# [기능 1] Word 파일을 읽어서 문항별로 쪼개는 기능 (표 인식 보완)
+# [기능 1] Word 파일을 읽어서 문항별로 쪼개는 기능 (표 인식 오류 수정)
 # ==========================================
 def parse_docx(file):
     doc = docx.Document(file)
@@ -17,7 +17,6 @@ def parse_docx(file):
     opt_pattern = re.compile(r'^([①②③④⑤])\s*(.*)') # 선택지 매칭
     meta_pattern = re.compile(r'^\[Chapter') # 단원 태그 매칭
     
-    # 💡 [핵심 보완] 워드 문서의 일반 문단과 표(테이블) 안의 텍스트를 순서대로 합쳐서 추출합니다.
     all_elements = []
     
     # 워드 문서 내부의 모든 요소(문단 또는 표)를 순서대로 순회합니다.
@@ -29,13 +28,15 @@ def parse_docx(file):
                 all_elements.append({"type": "text", "text": txt})
         elif element.tag.endswith('tbl'): # 📦 표(네모 상자)일 때
             t = docx.table.Table(element, doc)
-            # 표 안의 모든 셀(칸)에 들어있는 텍스트를 줄바꿈 기준으로 한데 모읍니다.
             table_lines = []
+            
+            # ★ [오류 수정 완료] 표의 행(row)을 돌며 각 칸(cell) 내부의 문단들을 안전하게 수집합니다.
             for row in t.rows:
-                for cell in cell.paragraphs:
-                    ctxt = cell.text.strip()
-                    if ctxt and ctxt not in table_lines:
-                        table_lines.append(ctxt)
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        ctxt = paragraph.text.strip()
+                        if ctxt and ctxt not in table_lines:
+                            table_lines.append(ctxt)
             
             # 표 내부 텍스트가 존재하면 하나의 '표 지문' 덩어리로 저장합니다.
             if table_lines:
@@ -51,6 +52,7 @@ def parse_docx(file):
                 for t_line in item["lines"]:
                     # 밑줄(___)을 웹용 span 코드로 자동 치환
                     converted_t_line = re.sub(r'_{2,}', '<span class="underline" style="width:100px;"></span>', t_line)
+                    
                     # 쉼표(,)로 연결된 다중 지문이 있다면 개별 줄바꿈으로 쪼개어 담기
                     if "The following table:" in converted_t_line:
                         continue
@@ -158,7 +160,6 @@ def generate_single_html(q):
 \t\t\t\t\t\t<td>{html.escape(q['title'])} <br></td>
 \t\t\t\t\t</tr>\n"""
     
-    # 💡 표 상자 안에 있던 지문들이 여기에 깔끔하게 <div class="sentence"> 형태로 들어갑니다.
     if q["sentence"]:
         sentence_br = " <br/> \n".join(q["sentence"])
         html_content += f"""\t\t\t\t\t<tr>
